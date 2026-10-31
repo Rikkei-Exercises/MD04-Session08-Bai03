@@ -4,7 +4,9 @@ import com.example.appointmentservice.dto.request.AppointmentRequestDTO;
 import com.example.appointmentservice.dto.response.ApiResponseError;
 import com.example.appointmentservice.dto.response.AppointmentResponseDTO;
 import com.example.appointmentservice.dto.response.DoctorResponseDTO;
+import com.example.appointmentservice.dto.response.PatientResponseDTO;
 import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.retry.annotation.Retry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -18,21 +20,45 @@ public class AppointmentService {
 
     private final RestTemplate restTemplate;
 
+    // =========================================================================
+    // 1. GỌI PATIENT-SERVICE VỚI @Retry(name = "patientRetry")
+    // =========================================================================
+
     /**
-     * Lay thong tin bac si tu Doctor-Service voi Circuit Breaker & fallback getDoctorFallback
+     * Gọi sang Patient-Service để lấy thông tin bệnh nhân.
+     * Áp dụng @Retry: tự động thử lại tối đa 3 lần, mỗi lần cách nhau 2s nếu gặp lỗi mạng.
      */
+    @Retry(name = "patientRetry", fallbackMethod = "getPatientFallback")
+    public Object getPatient(Long patientId) {
+        log.info("Đang gọi sang Patient-Service lấy thông tin bệnh nhân id={}...", patientId);
+        String patientUrl = "http://patient-service/api/v1/patients/" + patientId;
+        return restTemplate.getForObject(patientUrl, Object.class);
+    }
+
+    /**
+     * Fallback được gọi khi đã thử lại 3 lần mà vẫn thất bại
+     */
+    public ApiResponseError getPatientFallback(Long patientId, Exception e) {
+        log.warn("getPatientFallback được kích hoạt sau 3 lần Retry thất bại cho patientId={}: {}", patientId, e.toString());
+        return ApiResponseError.of(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "Hệ thống Patient-Service hiện không phản hồi sau 3 lần thử lại. Vui lòng thử lại sau!"
+        );
+    }
+
+    // =========================================================================
+    // 2. GỌI DOCTOR-SERVICE VỚI @CircuitBreaker(name = "doctorServiceCB")
+    // =========================================================================
+
     @CircuitBreaker(name = "doctorServiceCB", fallbackMethod = "getDoctorFallback")
     public Object getDoctor() {
-        log.info("Goi sang Doctor-Service de lay danh sach bac si...");
+        log.info("Gọi sang Doctor-Service để lấy danh sách bác sĩ...");
         String doctorUrl = "http://doctor-service/api/v1/doctors";
         return restTemplate.getForObject(doctorUrl, Object.class);
     }
 
-    /**
-     * Ham Fallback tra ve ApiResponseError voi HTTP status 503
-     */
     public ApiResponseError getDoctorFallback(Exception e) {
-        log.warn("getDoctorFallback duoc kich hoat do loi: {}", e.toString());
+        log.warn("getDoctorFallback được kích hoạt do lỗi: {}", e.toString());
         return ApiResponseError.of(
                 HttpStatus.SERVICE_UNAVAILABLE,
                 "Hiện tại không thể kiểm tra thông tin bác sĩ, vui lòng thử lại sau vài giây"
@@ -41,31 +67,32 @@ public class AppointmentService {
 
     @CircuitBreaker(name = "doctorServiceCB", fallbackMethod = "getDoctorByIdFallback")
     public Object getDoctor(Long doctorId) {
-        log.info("Goi sang Doctor-Service de lay thong tin bac si id={}...", doctorId);
+        log.info("Gọi sang Doctor-Service để lấy thông tin bác sĩ id={}...", doctorId);
         String doctorUrl = "http://doctor-service/api/v1/doctors/" + doctorId;
         return restTemplate.getForObject(doctorUrl, Object.class);
     }
 
     public ApiResponseError getDoctorByIdFallback(Long doctorId, Exception e) {
-        log.warn("getDoctorByIdFallback duoc kich hoat cho doctorId={}: {}", doctorId, e.toString());
+        log.warn("getDoctorByIdFallback được kích hoạt cho doctorId={}: {}", doctorId, e.toString());
         return getDoctorFallback(e);
     }
 
-    /**
-     * Dat lich hen kham benh
-     */
+    // =========================================================================
+    // 3. ĐẶT LỊCH HẸN
+    // =========================================================================
+
     @CircuitBreaker(name = "doctorServiceCB", fallbackMethod = "AddAppointmentFallback")
     public AppointmentResponseDTO AddAppointment(AppointmentRequestDTO request) {
-        log.info("Dang kiem tra lich truc bac si tu Doctor-Service (doctorId={})...", request.getDoctorId());
+        log.info("Đang kiểm tra lịch trực bác sĩ từ Doctor-Service (doctorId={})...", request.getDoctorId());
 
         String doctorUrl = "http://doctor-service/api/v1/doctors/" + request.getDoctorId();
         DoctorResponseDTO doctor = restTemplate.getForObject(doctorUrl, DoctorResponseDTO.class);
 
-        log.info("Kiem tra thanh cong, bac si hop le: {}", doctor != null ? doctor.getName() : "Khong xac dinh");
+        log.info("Kiểm tra thành công, bác sĩ hợp lệ: {}", doctor != null ? doctor.getName() : "Không xác định");
 
         return AppointmentResponseDTO.builder()
                 .status("SUCCESS")
-                .message("Dat lich kham thanh cong!")
+                .message("Đặt lịch khám thành công!")
                 .doctorId(request.getDoctorId())
                 .doctorName(doctor != null ? doctor.getName() : "Unknown")
                 .patientName(request.getPatientName())
@@ -74,13 +101,13 @@ public class AppointmentService {
     }
 
     public AppointmentResponseDTO AddAppointmentFallback(AppointmentRequestDTO request, Throwable throwable) {
-        log.warn("Fallback duoc kich hoat cho AddAppointment vi Doctor-Service gap su co: {}", throwable.toString());
+        log.warn("Fallback được kích hoạt cho AddAppointment vì Doctor-Service gặp sự cố: {}", throwable.toString());
 
         return AppointmentResponseDTO.builder()
                 .status("CIRCUIT_BREAKER_FALLBACK")
-                .message("Doctor-Service hien dang gap su co hoac mach da NGAT (OPEN). He thong tra ve loi ngay lap tuc de bao ve he thong.")
+                .message("Doctor-Service hiện đang gặp sự cố hoặc mạch đã NGẮT (OPEN). Hệ thống trả về lỗi ngay lập tức để bảo vệ hệ thống.")
                 .doctorId(request.getDoctorId())
-                .doctorName("Khong the lay thong tin bac si")
+                .doctorName("Không thể lấy thông tin bác sĩ")
                 .patientName(request.getPatientName())
                 .appointmentTime(request.getAppointmentTime())
                 .build();

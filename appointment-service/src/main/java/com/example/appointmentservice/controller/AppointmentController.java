@@ -23,7 +23,19 @@ public class AppointmentController {
     private final AppointmentService appointmentService;
 
     /**
-     * Endpoint kiem tra danh sach bac si (co Fallback getDoctorFallback tra ve status 503 khi Doctor-Service loi)
+     * Endpoint gọi sang Patient-Service (Áp dụng Retry 3 lần, mỗi lần cách 2s)
+     */
+    @GetMapping("/patients/{patientId}")
+    public ResponseEntity<?> getPatient(@PathVariable Long patientId) {
+        Object result = appointmentService.getPatient(patientId);
+        if (result instanceof ApiResponseError error) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(error);
+        }
+        return ResponseEntity.ok(result);
+    }
+
+    /**
+     * Endpoint kiểm tra danh sách bác sĩ (Có Circuit Breaker)
      */
     @GetMapping("/doctors")
     public ResponseEntity<?> getDoctors() {
@@ -35,7 +47,7 @@ public class AppointmentController {
     }
 
     /**
-     * Endpoint kiem tra chi tiet 1 bac si
+     * Endpoint kiểm tra chi tiết 1 bác sĩ
      */
     @GetMapping("/doctors/{doctorId}")
     public ResponseEntity<?> getDoctorById(@PathVariable Long doctorId) {
@@ -47,7 +59,7 @@ public class AppointmentController {
     }
 
     /**
-     * Endpoint dat lich kham
+     * Endpoint đặt lịch khám
      */
     @PostMapping
     public ResponseEntity<AppointmentResponseDTO> addAppointment(@RequestBody AppointmentRequestDTO request) {
@@ -56,7 +68,7 @@ public class AppointmentController {
     }
 
     /**
-     * Endpoint GET dat lich nhanh
+     * Endpoint GET đặt lịch nhanh
      */
     @GetMapping("/book/{doctorId}")
     public ResponseEntity<AppointmentResponseDTO> quickBook(

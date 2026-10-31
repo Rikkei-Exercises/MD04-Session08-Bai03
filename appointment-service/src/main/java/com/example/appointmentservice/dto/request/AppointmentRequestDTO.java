@@ -10,6 +10,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AppointmentRequestDTO {
+    private Long patientId;
     private Long doctorId;
     private String patientName;
     private String appointmentTime;
